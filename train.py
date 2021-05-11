@@ -16,6 +16,12 @@ from utils import CTCLabelConverter, CTCLabelConverterForBaiduWarpctc, AttnLabel
 from dataset import hierarchical_dataset, AlignCollate, Batch_Balanced_Dataset
 from model import Model
 from test import validation
+from torch.utils.tensorboard import SummaryWriter
+
+from myoptim.ranger import Ranger
+from myoptim.adabound import AdaBound
+from myoptim.radam import RAdam
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -31,6 +37,7 @@ def train(opt):
     train_dataset = Batch_Balanced_Dataset(opt)
 
     log = open(f'./saved_models/{opt.exp_name}/log_dataset.txt', 'a')
+    writer = SummaryWriter(f'./saved_models/log/{opt.exp_name}')
     AlignCollate_valid = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
     valid_dataset, valid_dataset_log = hierarchical_dataset(root=opt.valid_data, opt=opt)
     valid_loader = torch.utils.data.DataLoader(
@@ -110,10 +117,18 @@ def train(opt):
     # [print(name, p.numel()) for name, p in filter(lambda p: p[1].requires_grad, model.named_parameters())]
 
     # setup optimizer
-    if opt.adam:
+    if opt.optim == 'adam':
         optimizer = optim.Adam(filtered_parameters, lr=opt.lr, betas=(opt.beta1, 0.999))
-    else:
+    elif opt.optim == 'adamw':
+        optimizer = optim.AdamW(filtered_parameters, lr=opt.lr, betas=(opt.beta1, 0.999))
+    elif opt.optim == 'Adadelta':
         optimizer = optim.Adadelta(filtered_parameters, lr=opt.lr, rho=opt.rho, eps=opt.eps)
+    elif opt.optim == 'Ranger':
+        optimizer = Ranger(filtered_parameters, lr=opt.lr, betas=(opt.beta1, 0.999), weight_decay=5e-4)
+    elif opt.optim == 'adabound':
+        optimizer = AdaBound(filtered_parameters, lr=opt.lr, betas=(opt.beta1, 0.999), weight_decay=5e-4)
+
+
     print("Optimizer:")
     print(optimizer)
 
@@ -183,10 +198,17 @@ def train(opt):
                 model.train()
 
                 # training loss and validation loss
+                cur_step = iteration+1/opt.num_iter
                 loss_log = f'[{iteration+1}/{opt.num_iter}] Train loss: {loss_avg.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
+                writer.add_scalar(tag='Train_epoch/train_loss', scalar_value=loss_avg.val(), global_step=cur_step)
+                writer.add_scalar(tag='Train_epoch/valid_loss', scalar_value=valid_loss, global_step=cur_step)
+
                 loss_avg.reset()
 
                 current_model_log = f'{"Current_accuracy":17s}: {current_accuracy:0.3f}, {"Current_norm_ED":17s}: {current_norm_ED:0.2f}'
+                writer.add_scalar(tag='Valid/accuracy', scalar_value=current_accuracy, global_step=cur_step)
+                writer.add_scalar(tag='Valid/norm_ED', scalar_value=current_norm_ED, global_step=cur_step)
+
 
                 # keep best accuracy model (on valid dataset)
                 if current_accuracy > best_accuracy:
@@ -221,6 +243,7 @@ def train(opt):
                 model.state_dict(), f'./saved_models/{opt.exp_name}/iter_{iteration+1}.pth')
 
         if (iteration + 1) == opt.num_iter:
+            writer.close()
             print('end the training')
             sys.exit()
         iteration += 1
@@ -238,7 +261,7 @@ if __name__ == '__main__':
     parser.add_argument('--valInterval', type=int, default=2000, help='Interval between each validation')
     parser.add_argument('--saved_model', default='', help="path to model to continue training")
     parser.add_argument('--FT', action='store_true', help='whether to do fine-tuning')
-    parser.add_argument('--adam', action='store_true', help='Whether to use adam (default is Adadelta)')
+    parser.add_argument('--optim', type=str, default='adam', help='Whether to use adam (default is Adadelta)')
     parser.add_argument('--lr', type=float, default=1, help='learning rate, default=1.0 for Adadelta')
     parser.add_argument('--beta1', type=float, default=0.9, help='beta1 for adam. default=0.9')
     parser.add_argument('--rho', type=float, default=0.95, help='decay rate rho for Adadelta. default=0.95')
